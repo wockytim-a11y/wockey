@@ -1,0 +1,7 @@
+{
+  "name": "Ocular Rest - 15/30 Reminder",
+  "description": "A minimalist eye health companion that follows the 15-minute work, 30-second rest rule. Features a tiny persistent widget, audio cues, and Gemini-powered health tips during breaks.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
