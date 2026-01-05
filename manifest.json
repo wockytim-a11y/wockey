@@ -1,0 +1,18 @@
+
+{
+  "name": "Ocular Rest - 15/30 Reminder",
+  "short_name": "OcularRest",
+  "description": "A minimalist eye health companion for the 15/30 rule.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3233/3233483.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
