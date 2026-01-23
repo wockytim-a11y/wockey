@@ -6,21 +6,17 @@ import { AppState, Settings } from './types';
 import { DEFAULT_WORK_SECONDS, DEFAULT_BREAK_SECONDS } from './constants';
 import { audioService } from './services/audioService';
 import { fetchHealthTip } from './services/geminiService';
-// Added Eye icon import from lucide-react to fix the reference error
 import { Eye } from 'lucide-react';
 
-const STORAGE_KEY = 'ocular_rest_settings';
+const SETTINGS_KEY = 'ocular_rest_settings';
+const SESSION_KEY = 'ocular_rest_session';
 
 const App: React.FC = () => {
-  // Load settings from local storage or use defaults
+  // Load settings
   const [settings, setSettings] = useState<Settings>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = localStorage.getItem(SETTINGS_KEY);
     if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.warn("Failed to parse saved settings", e);
-      }
+      try { return JSON.parse(saved); } catch (e) { console.warn(e); }
     }
     return {
       workDuration: DEFAULT_WORK_SECONDS,
@@ -30,84 +26,105 @@ const App: React.FC = () => {
     };
   });
 
-  const [appState, setAppState] = useState<AppState>(AppState.WORKING);
+  const [appState, setAppState] = useState<AppState>(AppState.PAUSED);
   const [timeLeft, setTimeLeft] = useState(settings.workDuration);
   const [showDashboard, setShowDashboard] = useState(false);
   const [currentTip, setCurrentTip] = useState<string>("");
-
+  
+  // Track the target end time (absolute timestamp)
+  const [endTime, setEndTime] = useState<number | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  // Persist settings whenever they change
+  // Sync settings to storage
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   }, [settings]);
 
-  // Handle initialization of notifications
+  // Request notifications
   useEffect(() => {
-    if ("Notification" in window) {
+    if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
     }
   }, []);
 
-  const handleStateChange = useCallback(async (newState: AppState) => {
-    setAppState(newState);
-    
-    if (newState === AppState.BREAK) {
-      setTimeLeft(settings.breakDuration);
+  const startPhase = useCallback(async (state: AppState, duration: number) => {
+    const newEndTime = Date.now() + duration * 1000;
+    setAppState(state);
+    setEndTime(newEndTime);
+    setTimeLeft(duration);
+
+    if (state === AppState.BREAK) {
       if (!settings.isMuted) audioService.playBreakStart();
-      
       const tip = await fetchHealthTip();
       setCurrentTip(tip);
       
       if (Notification.permission === "granted") {
         new Notification("Ocular Rest Time!", {
-          body: `Look away from the screen for ${settings.breakDuration} seconds. ` + tip,
+          body: `Look away from the screen for ${duration} seconds. ${tip}`,
           icon: "https://cdn-icons-png.flaticon.com/512/3233/3233483.png"
         });
       }
-    } else if (newState === AppState.WORKING) {
-      setTimeLeft(settings.workDuration);
+    } else if (state === AppState.WORKING) {
       if (!settings.isMuted) audioService.playBreakEnd();
-      
       if (Notification.permission === "granted") {
-        new Notification("Focus Session Started", {
-          body: `Next rest in ${Math.round(settings.workDuration / 60)} minutes.`,
+        new Notification("Back to Work", {
+          body: `Next rest in ${Math.round(duration / 60)} minutes.`,
         });
       }
     }
-  }, [settings.breakDuration, settings.workDuration, settings.isMuted]);
+  }, [settings.isMuted, settings.workDuration, settings.breakDuration]);
 
+  // Main Timer Effect
   useEffect(() => {
-    if (appState !== AppState.PAUSED) {
+    if (appState !== AppState.PAUSED && endTime) {
       timerRef.current = window.setInterval(() => {
-        setTimeLeft((prev) => {
-          if (prev <= 1) {
-            if (appState === AppState.WORKING) {
-              handleStateChange(AppState.BREAK);
-            } else {
-              handleStateChange(AppState.WORKING);
-            }
-            return 0;
+        const now = Date.now();
+        const remaining = Math.max(0, Math.ceil((endTime - now) / 1000));
+        
+        setTimeLeft(remaining);
+
+        if (remaining <= 0) {
+          if (appState === AppState.WORKING) {
+            startPhase(AppState.BREAK, settings.breakDuration);
+          } else {
+            startPhase(AppState.WORKING, settings.workDuration);
           }
-          return prev - 1;
-        });
-      }, 1000) as unknown as number;
+        }
+      }, 200) as unknown as number; // High frequency check for smooth UI
     }
 
     return () => {
-      if (timerRef.current !== null) {
-        window.clearInterval(timerRef.current);
-        timerRef.current = null;
+      if (timerRef.current) window.clearInterval(timerRef.current);
+    };
+  }, [appState, endTime, startPhase, settings.workDuration, settings.breakDuration]);
+
+  // Handle Visibility Change (Tab switching)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && appState !== AppState.PAUSED && endTime) {
+        // Force immediate recalculation when returning to tab
+        const now = Date.now();
+        const remaining = Math.max(0, Math.ceil((endTime - now) / 1000));
+        setTimeLeft(remaining);
       }
     };
-  }, [appState, handleStateChange]);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [appState, endTime]);
 
   const toggleTimer = () => {
-    setAppState(prev => prev === AppState.PAUSED ? AppState.WORKING : AppState.PAUSED);
+    if (appState === AppState.PAUSED) {
+      startPhase(AppState.WORKING, settings.workDuration);
+    } else {
+      setAppState(AppState.PAUSED);
+      setEndTime(null);
+    }
   };
 
   const resetTimer = () => {
-    setAppState(AppState.WORKING);
+    setAppState(AppState.PAUSED);
+    setEndTime(null);
     setTimeLeft(settings.workDuration);
   };
 
@@ -115,9 +132,8 @@ const App: React.FC = () => {
     setSettings(prev => ({ ...prev, ...newSettings }));
   };
 
-  const progress = appState === AppState.WORKING 
-    ? 1 - (timeLeft / settings.workDuration)
-    : 1 - (timeLeft / settings.breakDuration);
+  const totalDuration = appState === AppState.BREAK ? settings.breakDuration : settings.workDuration;
+  const progress = 1 - (timeLeft / totalDuration);
 
   return (
     <div className="min-h-screen">
@@ -140,7 +156,7 @@ const App: React.FC = () => {
         />
       )}
 
-      {/* Break Overlay Prompt (Full screen emphasis when it's time to rest) */}
+      {/* Break Overlay Prompt */}
       {appState === AppState.BREAK && !showDashboard && (
         <div className="fixed inset-0 pointer-events-none z-40 bg-emerald-500/10 flex items-center justify-center animate-in fade-in duration-1000">
            <div className="bg-white/90 backdrop-blur-md p-8 rounded-[2.5rem] shadow-2xl border border-emerald-100 max-w-sm pointer-events-auto transform translate-y-[-20%] animate-in slide-in-from-bottom-8">
@@ -166,7 +182,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Installation Hint for Desktop App Experience */}
       {!localStorage.getItem('installed_hint_shown') && (
         <div className="fixed bottom-4 left-4 p-4 bg-white border border-gray-100 shadow-lg rounded-2xl max-w-xs z-30 group animate-in slide-in-from-left-4">
           <button 
